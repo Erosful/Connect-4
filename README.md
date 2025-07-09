@@ -2,7 +2,6 @@
 
 This is a localised multiplayer of Connect 4. written in Tkinter..
 
-Whilst, at this time, it is EXTREMELY unpolished - using string comprehension to split values passed wih sockets - I am planning to rewrite certain portions of the code using the pickle module to pass dictionaries through the sockets.
 
 Below is a photo of the layout of one of my School's IT rooms - wherein I had over 20 computers online and linked to play against eachother.
 ![Documentation](https://user-images.githubusercontent.com/101930449/180828940-c19541b0-228a-4130-b366-f1c1cd1f4f65.png)
