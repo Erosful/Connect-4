@@ -1,78 +1,106 @@
-import socket,threading,random,time,string
-List = [] #Im going to use an Array to store incoming connections as a pool
-ActiveGames = [] #And then store matches in a 2D array, where I can forward messages to the other player
-AliveConnections = []
-PORT_NUMBER = 65000
-SIZE = 1024
+import socket,pickle,time,threading,uuid,random,string
+import Utils
 
-x = socket.getfqdn()
-MY_IP = socket.gethostbyname_ex(x)[2][0] #Code to get my local IP address - I don't want to have to manually input it everytime I change computers
+class Host:
+    
+    def __init__(self,Socket=None):
+        self.Lobby = []
+        self.Connections = []
+        self.Games = {}
+        self.IP,self.Port = Utils.Utils.Get_IP()
+        if not Socket:
+            self.Socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM )
+            self.Socket.bind((self.IP,self.Port))
+        else:
+            self.Socket = Socket
+        self.Broadcasting = threading.Thread(target=self.pinging) #as well as IMMEDIATELY handle incoming messages, so threads were my best option.
 
-print("Running on IP {}:{}\n".format(MY_IP, PORT_NUMBER))
-mySocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM )
-BROADCAST_IP = (".".join(MY_IP.split(".")[:3])+".255") #IP Address to send a "broadcast" - message to all IPs in this subnet.
-mySocket.bind((MY_IP,PORT_NUMBER))
+    def Get_Game_By_IP(self,IP):
+        ID = None
+        for k,v in self.Games.items(): #Iterate through all current open matches
+            if not ID:
+                for k2,v2 in v.items():
+                    if v2["IP"] == IP:
+                        ID = k
+                        Player = k2
+                    else:
+                        Other_IP = v2["IP"]
+        if not ID:
+            return None
+        return {
+            "Game": ID,
+            "Player": Player,
+            "Other": Other_IP
+            }
+    
+    def Send_Broadcast(self,data):
+        BROADCAST_IP = ".".join(self.IP.split(".")[:3])+".255" #IP Address to send a "broadcast" - message to all IPs in this subnet.
+        self.Socket.sendto(pickle.dumps(data),(BROADCAST_IP,self.Port))
 
-def broadcasting(): #Constantly sends out the broadcast so that new computers can be added to the game seamlessly
-    while 1:
-        print("Sending out Broadcast")
-        mySocket.sendto("Anybody alive!?".encode('utf-8'),((BROADCAST_IP,PORT_NUMBER)))
-        time.sleep(3)
+    def pinging(self):
+        data = {
+            "Command": "Matchmaking",
+            "Arguments": None
+            }
+        while 1:
+            self.Send_Broadcast(data)
+            time.sleep(3)
 
-def handling():
-    global AliveConnections
-    while 1:
-        try:
-            (data,addr) = mySocket.recvfrom(SIZE)#
-            if "pong" in str(data):
-                AliveConnections.append(addr[0])
-            elif "recieving connection" in str(data): #This is the established reply to the broadcast.
-                if addr[0] in List:
-                    continue
-                List.append([addr[0],str(data)[24:len(str(data))-1]]) #Appends the IP Address (of the computer sending a reply) to a list
-                print(List)
-                if len(List)>=2:
-                    x = random.sample(List,2) #Randomly selects two IP addresses.
-                    GameID = (''.join(random.choice(string.ascii_letters) for _ in range(5)))#Make random GameID - Simply for display purposes (seeing which two computers are in sync)
-                    for i,v in enumerate(x): #Tells one that it's P1, Tells the other it's P2. -- Enumerate is essentially a for i in range and a for loop combined.
-                        mySocket.sendto(f"Player {i}! GameID: {GameID} {x[i-1][1]}".encode('utf-8'),((v[0],PORT_NUMBER)))#"v" is the IP address, whereas i is the index.
-                        List.remove(v) #Remove the IP address from the matchmaking pool.
-                    ActiveGames.append([x[0][0],x[1][0]])#Append the paired IPs intoa a 2D Array - end result might be [['112.53.34.16','112.53.34.20'],['112.53.34.190','112.53.34.54']]
-                    print(ActiveGames)
-            else: #Its sent something that ISNT the established reply
-                for x in ActiveGames: #Iterate through all current open matches
-                    if addr[0] in x: #See which one the incoming message is from
-                        for x2 in x: #Iterate through that match -- NOTE: I might make this more efficient as I dont need a for loop for a two element array.
-                            if x2 != addr[0]: #Find the address in the match that ISNT the incoming message.
-                                mySocket.sendto(data,((x2,PORT_NUMBER))) #Send the data to that address (The host simply acts as the middleman in this regard)
-                                break
-        except:
-            pass
+    def EndGame(self,ctx,data):
+        Information = self.Get_Game_By_IP(ctx[0])
+        if Information:
+            del(self.Games[Information["Game"]])
 
-def checkconnections():
-    global AliveConnections
-    time.sleep(30)
-    while 1:
-        AliveConnections = []
-        mySocket.sendto("ping!".encode('utf-8'),((BROADCAST_IP,PORT_NUMBER)))
-        time.sleep(5) #wait 5 seconds.
-        ListOfAddressess = []
-        print(ActiveGames)
-        print(AliveConnections)
-        for x in ActiveGames:
-            for i in x:
-                ListOfAddressess.append(i)
-        for x in ActiveGames:
-            for x2 in x:
-                if x2 not in AliveConnections:
-                    print(x)
-                    print(x2)
-                    ActiveGames.remove(x)
-        time.sleep(10)
+    def Ping(self,ctx,data):
+        if ctx not in self.Connections:
+            self.Connections.append(ctx)
+            data = {
+                "Command": "IsHost",
+                "Arguments": True
+                }
+            self.Socket.sendto(pickle.dumps(data),ctx)
+            print(self.Connections)
 
-x = threading.Thread(target=broadcasting) #I need both of these codes running at once, since I need to broadcast constantly,
-y = threading.Thread(target=handling) #as well as IMMEDIATELY handle incoming messages, so threads were my best option.
-z = threading.Thread(target=checkconnections)
-x.start()
-y.start()
-z.start()
+    def Spectate(self,ctx,data):
+        pass
+
+    def Matchmaker(self,ctx,data):
+        if ctx in self.Lobby:
+            return
+        self.Lobby.append([ctx[0],data]) #Appends the IP Address (of the computer sending a reply) to a list
+        if len(self.Lobby)>=2:
+            self.Create_Match(random.sample(self.Lobby,2))
+
+    def Choice(self,ctx,data):
+        Information = self.Get_Game_By_IP(ctx[0])
+        NewData = {
+            "Command": "Choice",
+            "Arguments": data
+            }
+        self.Socket.sendto(pickle.dumps(NewData),((Information["Other"],self.Port)))
+        self.Games[Information["Game"]][Information["Player"]]["Moves"].append(data)
+
+    def Create_Match(self,Players):
+        GameID = ("".join(random.choice(string.ascii_letters) for _ in range(5)))#Make random GameID - Simply for display purposes (seeing which two computers are in sync)
+        while GameID in self.Games.keys():
+            GameID = ("".join(random.choice(string.ascii_letters) for _ in range(5)))#Make random GameID - Simply for display purposes (seeing which two computers are in sync)
+        self.Games[GameID] = {}
+        for i,v in enumerate(Players): #Tells one that it"s P1, Tells the other it"s P2. -- Enumerate is essentially a for i in range and a for loop combined.
+            self.Games[GameID][f"Player {i}"] = {
+                "IP":v[0], #Address
+                "Name":v[1], ##Player defined name
+                "Moves":[]#Empty array to be used with the spectators
+                }
+            data = {
+                "Command": "Game_Create",
+                "Arguments": {
+                    "Player": i,
+                    "GameID": GameID,
+                    "Opponent": Players[i-1][1]
+                    }
+                }
+            self.Socket.sendto(pickle.dumps(data),(v[0],self.Port))#"v" is the IP address, whereas i is the index.
+            self.Lobby.remove(v) #Remove the IP address from the matchmaking pool.
+        
+    def start(self):
+        self.Broadcasting.start()
